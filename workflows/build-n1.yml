@@ -1,0 +1,109 @@
+name: Build N1 ImmortalWrt Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: '选择内核版本'
+        required: true
+        default: '6.6.y'
+        type: choice
+        options:
+          - '6.6.y'
+          - '6.12.y'
+          - '6.18.y'
+      custom_packaging:
+        description: '启用精简打包（屏蔽无线/USB网卡/PPP）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  OPENWRT_ROOTFS_URL: https://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260625-1424-rootfs.tar.gz
+  PACKAGE_SOC: s905d
+  KERNEL_REPO_URL: breakingbadboy/OpenWrt
+  VMLINUX_BTF_URL: https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf_6.6.141-r1_aarch64_cortex-a53.ipk
+  PACKIT_PATH: /opt/openwrt_packit
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 显示构建参数
+        run: |
+          echo "=========================================="
+          echo "📦 构建参数"
+          echo "=========================================="
+          echo "内核版本: ${{ github.event.inputs.kernel_version }}"
+          echo "精简打包: ${{ github.event.inputs.custom_packaging }}"
+          echo "底包: ${{ env.OPENWRT_ROOTFS_URL }}"
+          echo "目标设备: s905d (Phicomm N1)"
+          echo "=========================================="
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs dosfstools gawk uuid-runtime mount parted git
+
+      - name: 克隆打包脚本仓库
+        run: |
+          echo "📥 克隆打包脚本仓库..."
+          sudo mkdir -p /opt
+          sudo git clone --depth 1 https://github.com/unifreq/openwrt_packit.git ${{ env.PACKIT_PATH }}
+          sudo chown -R $USER:$USER ${{ env.PACKIT_PATH }}
+          echo "✅ 克隆完成"
+
+      - name: 应用 custom_packaging 补丁
+        if: github.event.inputs.custom_packaging == 'true'
+        run: |
+          echo "🔧 应用 custom_packaging 补丁..."
+          cd ${{ env.PACKIT_PATH }}
+          patch -p1 < $GITHUB_WORKSPACE/patches/custom_packaging.patch
+          echo "✅ 补丁应用完成"
+
+      - name: 下载 vmlinux-btf.ipk
+        run: |
+          echo "📥 下载 vmlinux-btf.ipk..."
+          mkdir -p ${{ env.PACKIT_PATH }}/files
+          curl -L -o ${{ env.PACKIT_PATH }}/files/vmlinux-btf.ipk ${{ env.VMLINUX_BTF_URL }}
+          echo "✅ 下载完成"
+          ls -lh ${{ env.PACKIT_PATH }}/files/vmlinux-btf.ipk
+
+      - name: 打包 OpenWrt 固件
+        uses: ophub/flippy-openwrt-actions@main
+        env:
+          OPENWRT_ARMSR: ${{ env.OPENWRT_ROOTFS_URL }}
+          PACKAGE_SOC: ${{ env.PACKAGE_SOC }}
+          KERNEL_VERSION_NAME: ${{ github.event.inputs.kernel_version }}
+          KERNEL_AUTO_LATEST: true
+          KERNEL_REPO_URL: ${{ env.KERNEL_REPO_URL }}
+          WHOAMI: N1-Builder
+          OPENWRT_VER: 24.10.6
+          ENABLE_WIFI_K510: 0
+          GZIP_IMGS: .gz
+
+      - name: 固件诊断体检
+        run: |
+          echo "🔍 开始固件诊断体检..."
+          chmod +x scripts/diagnose-firmware.sh
+          sudo ./scripts/diagnose-firmware.sh
+
+      - name: 上传固件到 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: N1-ImmortalWrt-${{ github.event.inputs.kernel_version }}
+          path: /opt/openwrt_packit/output/*.img.gz
+          retention-days: 7
+
+      - name: 上传诊断报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-report-${{ github.event.inputs.kernel_version }}
+          path: /tmp/diagnose-report.txt
+          retention-days: 7
