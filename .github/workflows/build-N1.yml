@@ -29,4 +29,4 @@ jobs:
 
       - name: 诊断固件
         run: |
-          bash shell/trim-firmware.sh
+          bash shell/diagnose-firmware.sh
