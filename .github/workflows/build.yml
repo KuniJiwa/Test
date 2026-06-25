@@ -1,4 +1,4 @@
-name: Build N1 ImmortalWrt Firmware
+name: Build N1
 
 on:
   workflow_dispatch:
