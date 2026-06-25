@@ -1,0 +1,29 @@
+---
+name: Test Package N1 Firmware
+on:
+  workflow_dispatch: null
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: 下载 vmlinux-btf.ipk
+        run: >
+          mkdir -p /tmp/files
+
+          curl -L -o /tmp/files/vmlinux-btf.ipk \
+            "https://github.com/kenzok8/vmlinux-btf/releases/download/latest/vmlinux-btf_6.6.141-r1_aarch64_cortex-a53.ipk"
+          ls -lh /tmp/files/
+      - name: Package firmware
+        uses: KuniJiwa/flippy-openwrt-actions@teat
+        env:
+          OPENWRT_ARMSR: https://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260625-1424-rootfs.tar.gz
+          PACKAGE_SOC: s905d
+          KERNEL_VERSION_NAME: 6.6.120
+          KERNEL_AUTO_LATEST: false
+          WHOAMI: KuniJiwa
+          APPLY_CUSTOM_PATCH: true
+      - name: 诊断固件
+        run: |
+          sudo bash shell/diagnose-firmware.sh
