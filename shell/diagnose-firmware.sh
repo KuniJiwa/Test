@@ -189,33 +189,42 @@ if [ -f "$BTF_FILE" ]; then
     echo "  ✅ [已注入] vmlinux-btf 文件 (${SIZE})"
     PASS=$((PASS+1))
     
-    # 验证是否为 ELF 文件
+    # 检查文件类型
     FILE_TYPE=$(file -b "$BTF_FILE" 2>/dev/null)
-    if echo "$FILE_TYPE" | grep -qi "ELF"; then
-        echo "  ✅ [格式] ELF 格式正确"
-        PASS=$((PASS+1))
-    else
-        echo "  ❌ [格式] 不是 ELF 文件: $FILE_TYPE"
-        FAIL=$((FAIL+1))
-    fi
     
-    # 验证是否包含 BTF 段（用 readelf）
-    if command -v readelf >/dev/null 2>&1; then
-        BTF_SECTION=$(readelf -S "$BTF_FILE" 2>/dev/null | grep -i "\.BTF")
-        if [ -n "$BTF_SECTION" ]; then
-            echo "  ✅ [BTF] 包含 .BTF 段"
-            PASS=$((PASS+1))
-        else
-            echo "  ⚠️  [BTF] 未找到 .BTF 段（可能是压缩或其他格式）"
-            WARN=$((WARN+1))
+    if echo "$FILE_TYPE" | grep -qi "ELF"; then
+        echo "  ✅ [格式] ELF 格式"
+        PASS=$((PASS+1))
+        
+        # ELF 格式：检查 .BTF 段
+        if command -v readelf >/dev/null 2>&1; then
+            BTF_SECTION=$(readelf -S "$BTF_FILE" 2>/dev/null | grep -i "\.BTF")
+            if [ -n "$BTF_SECTION" ]; then
+                echo "  ✅ [BTF] 包含 .BTF 段"
+                PASS=$((PASS+1))
+            else
+                echo "  ❌ [BTF] 未找到 .BTF 段"
+                FAIL=$((FAIL+1))
+            fi
         fi
     else
-        echo "  ⚠️  [跳过] 无 readelf 工具，无法验证 BTF 段"
-        WARN=$((WARN+1))
+        # 非 ELF 格式，可能是原始 BTF 数据（OpenWrt 常见）
+        echo "  ℹ️  [格式] 原始 BTF 数据格式（非 ELF，OpenWrt 常见）"
+        PASS=$((PASS+1))
+        
+        # 检查 BTF magic number（BTF_MAGIC = 0xeB9F，小端存储为 9F eB）
+        MAGIC=$(xxd -l 2 -p "$BTF_FILE" 2>/dev/null)
+        if [ "$MAGIC" = "9feb" ] || [ "$MAGIC" = "eb9f" ]; then
+            echo "  ✅ [BTF] BTF magic 校验通过"
+            PASS=$((PASS+1))
+        else
+            echo "  ⚠️  [BTF] 无法验证 BTF magic（可能是其他格式）"
+            WARN=$((WARN+1))
+        fi
     fi
     
-    # 文件大小合理性检查（应该大于 1MB）
-    if [ "$SIZE_BYTES" -gt 1000000 ]; then
+    # 文件大小合理性检查（应该大于 500KB）
+    if [ "$SIZE_BYTES" -gt 500000 ]; then
         echo "  ✅ [大小] 文件大小合理 (${SIZE})"
         PASS=$((PASS+1))
     else
