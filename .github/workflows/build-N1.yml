@@ -22,7 +22,7 @@ jobs:
         env:
           OPENWRT_ARMSR: https://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260625-1424-rootfs.tar.gz
           PACKAGE_SOC: s905d
-          KERNEL_VERSION_NAME: 6.6.141
+          KERNEL_VERSION_NAME: 6.6.120
           KERNEL_AUTO_LATEST: false
           WHOAMI: KuniJiwa
           APPLY_CUSTOM_PATCH: true
