@@ -1,9 +1,6 @@
 name: Test Package N1 Firmware
 
 on:
-  push:
-    branches: [teat]
-    paths: ['.github/workflows/test-package.yml']
   workflow_dispatch:
 
 jobs:
