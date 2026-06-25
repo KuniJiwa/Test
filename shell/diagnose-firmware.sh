@@ -1,8 +1,5 @@
 #!/bin/bash
-# 固件诊断脚本 - 检查全部 14 项清理是否生效
-# 用法: sudo bash diagnose-firmware.sh
-# 原始 img.gz 不动，操作诊断副本，仅诊断不清理
-
+# 固件诊断 - 仅诊断不清理，操作副本，原始不动
 OUTPUT_DIR="/opt/openwrt_packit/output"
 MOUNT_DIR="/mnt/fw-diag"
 REPORT="/tmp/diagnose-report.txt"
@@ -10,178 +7,113 @@ REPORT="/tmp/diagnose-report.txt"
 echo "=========================================="
 echo "🔍 固件诊断（14 项清理检查）"
 echo "=========================================="
-
-# 初始化报告
-echo "==========================================" > "$REPORT"
-echo "📋 固件诊断报告" >> "$REPORT"
-echo "检查时间: $(date '+%Y-%m-%d %H:%M:%S')" >> "$REPORT"
-echo "==========================================" >> "$REPORT"
+echo "诊断时间: $(date '+%Y-%m-%d %H:%M:%S')" > "$REPORT"
+echo "原始固件: $(ls "$OUTPUT_DIR"/openwrt_s905d_n1_*.img.gz 2>/dev/null | head -1)" >> "$REPORT"
 echo "" >> "$REPORT"
 
-# 1. 找到原始 img.gz
 IMG_GZ=$(ls "$OUTPUT_DIR"/openwrt_s905d_n1_*.img.gz 2>/dev/null | head -1)
-[ -z "$IMG_GZ" ] && { echo "❌ 找不到固件"; echo "❌ 找不到固件" >> "$REPORT"; exit 0; }
+[ -z "$IMG_GZ" ] && { echo "❌ 找不到固件"; exit 0; }
 echo "✅ 原始固件: $IMG_GZ"
-echo "原始固件: $(basename $IMG_GZ)" >> "$REPORT"
 
-# 2. 创建诊断副本
 DIAG_GZ="${IMG_GZ%.img.gz}-diagnose.img.gz"
 cp "$IMG_GZ" "$DIAG_GZ"
-echo "📋 诊断副本: $DIAG_GZ"
-
-# 3. 解压诊断副本
 gunzip "$DIAG_GZ"
 DIAG_IMG="${DIAG_GZ%.gz}"
-echo "📦 解压完成: $DIAG_IMG"
 
-# 4. 挂载
 LOOP=$(losetup -fP --show "$DIAG_IMG")
-BTRFS_PART="${LOOP}p2"
 mkdir -p "$MOUNT_DIR"
+mount -t btrfs -o subvol=@ "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null || mount -t btrfs "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null || { echo "❌ 挂载失败"; losetup -d "$LOOP"; rm -f "$DIAG_IMG"; exit 0; }
 
-MOUNTED=false
-if mount -t btrfs -o subvol=@ "$BTRFS_PART" "$MOUNT_DIR" 2>/dev/null; then
-    MOUNTED=true
-elif mount -t btrfs "$BTRFS_PART" "$MOUNT_DIR" 2>/dev/null; then
-    MOUNTED=true
-fi
-
-[ "$MOUNTED" = false ] && { echo "❌ 挂载失败"; losetup -d "$LOOP"; rm -f "$DIAG_IMG"; exit 0; }
-echo "✅ 挂载成功"
-
-# 5. 获取内核版本目录
 KERNEL_DIR=$(find "$MOUNT_DIR/lib/modules" -maxdepth 1 -type d -name "[0-9]*" 2>/dev/null | head -1)
 MOD_BASE="${KERNEL_DIR}/kernel/drivers/net"
-echo "" >> "$REPORT"
-echo "检查详情:" >> "$REPORT"
+MOD_DIR="$MOUNT_DIR/etc/modules.d"
 
-# 6. 逐项检查
-PASS=0
-FAIL=0
-FAIL_LIST=""
+PASS=0; FAIL=0; FAIL_LIST=""
 
 check() {
-    local num="$1" desc="$2" path="$3" type="$4" expect="$5"
-    local result=""
+    local desc="$1" path="$2" type="$3" expect="$4"
     local exists=false
-
-    case "$type" in
-        dir)  [ -d "$path" ] && exists=true ;;
-        file) [ -f "$path" ] && exists=true ;;
-    esac
+    case "$type" in dir) [ -d "$path" ] && exists=true ;; file) [ -f "$path" ] && exists=true ;; esac
 
     if [ "$expect" = "absent" ]; then
         if [ "$exists" = false ]; then
-            result="✅"
-            PASS=$((PASS + 1))
+            echo "✅ ${desc} → ${path}"
+            echo "✅ ${desc} → ${path}" >> "$REPORT"
+            PASS=$((PASS+1))
         else
-            result="❌"
-            FAIL=$((FAIL + 1))
-            FAIL_LIST="${FAIL_LIST}  ${num}. ${desc}（应清理但仍存在）\n"
+            echo "❌ ${desc} → ${path}"
+            echo "❌ ${desc} → ${path}" >> "$REPORT"
+            FAIL=$((FAIL+1))
+            FAIL_LIST="${FAIL_LIST}  ❌ ${desc}\n"
         fi
-    else  # expect=present
+    else
         if [ "$exists" = true ]; then
-            result="✅"
-            PASS=$((PASS + 1))
+            echo "✅ ${desc} → ${path}"
+            echo "✅ ${desc} → ${path}" >> "$REPORT"
+            PASS=$((PASS+1))
         else
-            result="❌"
-            FAIL=$((FAIL + 1))
-            FAIL_LIST="${FAIL_LIST}  ${num}. ${desc}（应保留但缺失）\n"
+            echo "❌ ${desc} → ${path}"
+            echo "❌ ${desc} → ${path}" >> "$REPORT"
+            FAIL=$((FAIL+1))
+            FAIL_LIST="${FAIL_LIST}  ❌ ${desc}\n"
         fi
     fi
-
-    echo "  ${result} ${num}. ${desc}"
-    echo "  ${result} ${num}. ${desc}" >> "$REPORT"
 }
 
 echo ""
-echo "=========================================="
-echo "📊 开始逐项检查"
-echo "=========================================="
-echo ""
+echo "📊 诊断结果:"
+echo "" >> "$REPORT"
 
-# 1-3: 驱动目录（应被清理）
-check 1 "wireless 驱动目录" "${MOD_BASE}/wireless" dir absent
-check 2 "usb 网卡驱动目录" "${MOD_BASE}/usb" dir absent
-check 3 "ppp 驱动目录" "${MOD_BASE}/ppp" dir absent
+# 1-3 驱动目录
+check "wireless 驱动目录" "${MOD_BASE}/wireless" dir absent
+check "usb 网卡驱动目录" "${MOD_BASE}/usb" dir absent
+check "ppp 驱动目录" "${MOD_BASE}/ppp" dir absent
 
-# 4: WiFi 固件（应被清理）
-check 4 "WiFi 固件 (brcm)" "$MOUNT_DIR/lib/firmware/brcm" dir absent
+# 4 WiFi 固件
+check "WiFi 固件 (brcm)" "$MOUNT_DIR/lib/firmware/brcm" dir absent
 
-# 5: 无线配置（应被清理）
-check 5 "无线配置文件" "$MOUNT_DIR/etc/config/wireless" file absent
+# 5 无线配置
+check "无线配置文件" "$MOUNT_DIR/etc/config/wireless" file absent
 
-# 6: brcmfmac 模块（应被清理）
-check 6 "brcmfmac 模块文件" "$MOUNT_DIR/etc/modules.d/brcmfmac" file absent
+# 6 brcmfmac 模块
+check "brcmfmac 模块" "${MOD_DIR}/brcmfmac" file absent
 
-# 7: 10 个 USB/无线模块文件（应被清理）
-MOD_DIR="$MOUNT_DIR/etc/modules.d"
+# 7 10个USB/无线模块
 for mod in usb-net-asix-ax88179 usb-net-rtl8152 rtl8188eu rt2500-usb rt2800-usb rt2x00-usb mt7601u mt7663u mt76x0u mt76x2u; do
-    check 7 "${mod} 模块" "${MOD_DIR}/${mod}" file absent
+    check "${mod} 模块" "${MOD_DIR}/${mod}" file absent
 done
 
-# 8-11: MAC/WiFi 脚本（应被清理）
-check 8  "fix_wifi_macaddr.sh"   "$MOUNT_DIR/usr/bin/fix_wifi_macaddr.sh" file absent
-check 9  "find_macaddr.pl"       "$MOUNT_DIR/usr/bin/find_macaddr.pl"    file absent
-check 10 "inc_macaddr.pl"        "$MOUNT_DIR/usr/bin/inc_macaddr.pl"     file absent
-check 11 "get_random_mac.sh"     "$MOUNT_DIR/usr/bin/get_random_mac.sh"  file absent
+# 8-11 MAC/WiFi 脚本
+check "fix_wifi_macaddr.sh" "$MOUNT_DIR/usr/bin/fix_wifi_macaddr.sh" file absent
+check "find_macaddr.pl" "$MOUNT_DIR/usr/bin/find_macaddr.pl" file absent
+check "inc_macaddr.pl" "$MOUNT_DIR/usr/bin/inc_macaddr.pl" file absent
+check "get_random_mac.sh" "$MOUNT_DIR/usr/bin/get_random_mac.sh" file absent
 
-# 12-14: 保留项（应存在）
-check 12 "看门狗模块" "$MOUNT_DIR/etc/modules.d/watchdog" file present
-check 13 "GPU 模块"   "$MOUNT_DIR/etc/modules.d/panfrost"  file present
-check 14 "PWM 模块"   "$MOUNT_DIR/etc/modules.d/pwm_meson" file present
+# 12-14 保留项
+check "看门狗模块" "${MOD_DIR}/watchdog" file present
+check "GPU 模块" "${MOD_DIR}/panfrost" file present
+check "PWM 模块" "${MOD_DIR}/pwm_meson" file present
 
-# 7. 清理
-echo ""
-echo "📤 卸载并清理诊断副本..."
+# 清理
 umount "$MOUNT_DIR" 2>/dev/null
 losetup -d "$LOOP" 2>/dev/null
-rm -rf "$MOUNT_DIR"
-rm -f "$DIAG_IMG"
-echo "✅ 诊断副本已清理，原始固件未改动"
+rm -rf "$MOUNT_DIR" "$DIAG_IMG"
 
-# 8. 汇总报告
-TOTAL=$((PASS + FAIL))
+# 汇总
+TOTAL=$((PASS+FAIL))
 echo ""
-echo "=========================================="
-echo "📈 诊断汇总"
-echo "=========================================="
-echo ""
-echo "  总计: ${TOTAL} 项"
-echo "  通过: ${PASS} 项"
-echo "  失败: ${FAIL} 项"
-
-cat >> "$REPORT" << EOF
-
-==========================================
-📈 诊断汇总
-==========================================
-
-检查项: ${TOTAL}
-通过:   ${PASS}
-失败:   ${FAIL}
-
-原始固件: $(basename $IMG_GZ)（未改动）
-诊断副本: 已自动清理
-==========================================
-EOF
-
+echo "📈 汇总: 共 ${TOTAL} 项，✅ ${PASS} 项，❌ ${FAIL} 项"
+echo "" >> "$REPORT"
+echo "📈 汇总: 共 ${TOTAL} 项，✅ ${PASS} 项，❌ ${FAIL} 项" >> "$REPORT"
 if [ "$FAIL" -gt 0 ]; then
-    echo ""
     echo "❌ 失败项明细:"
-    echo ""
     echo -e "$FAIL_LIST"
-    echo ""
     echo "❌ 失败项明细:" >> "$REPORT"
     echo -e "$FAIL_LIST" >> "$REPORT"
 else
-    echo ""
-    echo "✅ 全部 14 项通过"
-    echo ""
+    echo "✅ 全部通过"
     echo "✅ 全部通过" >> "$REPORT"
 fi
-
-echo "📄 报告已保存: $REPORT"
-echo "=========================================="
+echo "📄 报告: $REPORT"
 
 exit 0
