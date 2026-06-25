@@ -18,7 +18,7 @@ jobs:
           ls -lh files/
 
       - name: Package firmware
-        uses: KuniJiwa/flippy-openwrt-actions@custom
+        uses: KuniJiwa/flippy-openwrt-actions@test
         env:
           OPENWRT_ARMSR: https://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260625-1424-rootfs.tar.gz
           PACKAGE_SOC: s905d
