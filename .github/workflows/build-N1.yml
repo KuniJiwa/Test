@@ -26,3 +26,7 @@ jobs:
           KERNEL_AUTO_LATEST: false
           WHOAMI: KuniJiwa
           APPLY_CUSTOM_PATCH: true
+
+      - name: 诊断固件
+        run: |
+          bash shell/trim-firmware.sh
