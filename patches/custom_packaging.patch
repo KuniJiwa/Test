@@ -1,0 +1,79 @@
+--- a/public_funcs
++++ b/public_funcs
+@@ -760,6 +760,7 @@
+    echo -n "优化 firmware ... "
+    (
+        cd $TGT_ROOT/lib/firmware
++       if false; then
+        mv *.hcd brcm/ 2>/dev/null
+        cd brcm
+ 
+@@ -804,6 +805,7 @@
+        get_random_mac
+        sed -e "s/macaddr=00:90:4c:c5:12:38/macaddr=${MACADDR}/" "brcmfmac43455-sdio.txt" > "brcmfmac43455-sdio.JP-TVbox,rk3566.txt"
+        ln -s brcmfmac43455-sdio.bin brcmfmac43455-sdio.JP-TVbox,rk3566.bin
++       fi
+    )
+    echo "完成"
+ 
+@@ -1275,7 +1277,9 @@
+ 	[ -n "${BALANCE_IRQ_HOME}" ] && [ -d "${BALANCE_IRQ_HOME}" ] && cp -av "${BALANCE_IRQ_HOME}"/* .
+ 
+         [ -f "./etc/init.d/cpufreq" ] && [ -n "$CPUFREQ_INIT" ] && [ -f $CPUFREQ_INIT ] && cp -v $CPUFREQ_INIT etc/init.d/ && chmod 755 etc/init.d/cpufreq
++        if false; then
+         [ -n "$WIRELESS_CONFIG" ] && [ -f $WIRELESS_CONFIG ] && cp -v $WIRELESS_CONFIG etc/config/
++        fi
+         [ -n "$FIX_CPU_FREQ" ] && [ -f $FIX_CPU_FREQ ] && cp -v $FIX_CPU_FREQ ./usr/sbin && chmod 755 ./usr/sbin/fixcpufreq.pl
+         [ -n "$SYSFIXTIME_PATCH" ] && [ -f "$SYSFIXTIME_PATCH" ] && patch -p1 < $SYSFIXTIME_PATCH
+         [ -n "$NETWORK_SERVICE_PATCH" ] && [ -f "$NETWORK_SERVICE_PATCH" ] && patch -p1 < $NETWORK_SERVICE_PATCH
+@@ -1283,10 +1287,12 @@
+ 	patch_cgroupfs_mount
+         [ -n "$FORCE_REBOOT" ] && [ -f $FORCE_REBOOT ] && cp -v $FORCE_REBOOT usr/sbin/ 
+ 
++        if false; then
+         [ -n "$GET_RANDOM_MAC" ] && [ -f ${GET_RANDOM_MAC} ] && cp -v ${GET_RANDOM_MAC} ./usr/bin/
+         [ -n "$MAC_SCRIPT1" ] && [ -f "$MAC_SCRIPT1" ] && cp -v $MAC_SCRIPT1 ./usr/bin/
+         [ -n "$MAC_SCRIPT2" ] && [ -f "$MAC_SCRIPT2" ] && cp -v $MAC_SCRIPT2 ./usr/bin/
+         [ -n "$MAC_SCRIPT3" ] && [ -f "$MAC_SCRIPT3" ] && cp -v $MAC_SCRIPT3 ./usr/bin/
++        fi
+ 
+         [ -n "$CPUSTAT_SCRIPT" ] && [ -f $CPUSTAT_SCRIPT ] && cp -v $CPUSTAT_SCRIPT ./usr/bin/cpustat && chmod 755 ./usr/bin/cpustat  
+         [ -n "$GETCPU_SCRIPT" ] && [ -f "$GETCPU_SCRIPT" ] && cp -v $GETCPU_SCRIPT ./bin/
+@@ -1787,6 +1793,27 @@
+             echo "完成"
+         fi
+ 
++
++        # 删除不需要的网络驱动（整个目录）
++        rm -rf lib/modules/*/kernel/drivers/net/usb 2>/dev/null
++        rm -rf lib/modules/*/kernel/drivers/net/wireless 2>/dev/null
++        rm -rf lib/modules/*/kernel/drivers/net/ppp 2>/dev/null
++
++        # 删除 WiFi 固件文件
++        rm -rf lib/firmware/brcm 2>/dev/null
++
++        # 注入 vmlinux-btf（支持 dae/daed）
++        if [ -f "${PWD}/files/vmlinux-btf.ipk" ]; then
++            echo -n "注入 vmlinux-btf ... "
++            tmpdir=$(mktemp -d)
++            tar xzf "${PWD}/files/vmlinux-btf.ipk" -C "$tmpdir" 2>/dev/null
++            if [ -f "$tmpdir/data.tar.gz" ]; then
++                tar xzf "$tmpdir/data.tar.gz" -C . 2>/dev/null
++                echo "完成"
++            else
++                echo "失败"
++            fi
++            rm -rf "$tmpdir"
++        fi
++        if false; then
+         case $ps in 
+             allwinner_h6|rockchip_rk3328|rockchip_rk3568|rockchip_rk3588) 
+                 echo -n "当前机型并未内置 broadcom 无线模块, 禁用 brcmfmac 驱动 ... "
+@@ -1847,6 +1874,7 @@
+         echo "mt76x2u" > ./etc/modules.d/mt76x2u
+         echo "完成"
+         echo "  *** 如果有 Mediatek mt7601u/mt7610u/mt7612u/mt7663u 系列USB无线网卡的话，插上基本能用"
++        fi
+ 
+         echo -n "启用看门狗驱动 ... "
+         case $PLATFORM in
