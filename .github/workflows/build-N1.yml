@@ -207,11 +207,11 @@ jobs:
               bash /home/build/immortalwrt/build.sh
             "
 
-      - name: Remove redundancy
-        run: bash shell/cleanup-packages.sh
+      #- name: Remove redundancy
+     #   run: bash shell/cleanup-packages.sh
 
-      - name: Diagnose firmware
-        run: bash shell/check-firmware.sh || true
+     # - name: Diagnose firmware
+      #  run: bash shell/check-firmware.sh || true
 
       - name: 查找rootfs.tar.gz所在路径
         id: find_rootfs
