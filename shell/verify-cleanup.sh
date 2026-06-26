@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#路径：shell/verify-cleanup.sh
 # 固件诊断 - 操作副本，原始不动
 
 OUTPUT_DIR="/opt/openwrt_packit/output"
