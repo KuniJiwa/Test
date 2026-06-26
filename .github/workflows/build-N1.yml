@@ -8,7 +8,6 @@ on:
         default: '6.1.160'
         type: choice
         options:
-          # 6.1.x 系列
           - 6.1.121
           - 6.1.122
           - 6.1.123
@@ -45,7 +44,6 @@ on:
           - 6.1.158
           - 6.1.159
           - 6.1.160
-          # 6.6.x 系列
           - 6.6.67
           - 6.6.68
           - 6.6.69
@@ -90,7 +88,6 @@ on:
           - 6.6.116
           - 6.6.119
           - 6.6.120
-          # 6.12.x 系列
           - 6.12.16
           - 6.12.17
           - 6.12.18
@@ -159,3 +156,9 @@ jobs:
       - name: 诊断固件
         run: |
           sudo bash shell/verify-cleanup.sh
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-kernel-${{ inputs.kernel_version }}
+          path: ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
