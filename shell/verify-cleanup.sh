@@ -17,7 +17,6 @@ IMG_SIZE=$(ls -lh "$IMG_GZ" | awk '{print $5}')
 echo "📦 固件文件: $IMG_BASENAME"
 echo "📦 压缩大小: $IMG_SIZE"
 
-# 复制副本，不碰原始文件
 DIAG_GZ="${IMG_GZ%.img.gz}-diagnose.img.gz"
 cp "$IMG_GZ" "$DIAG_GZ" && gunzip "$DIAG_GZ"
 DIAG_IMG="${DIAG_GZ%.gz}"
@@ -25,15 +24,12 @@ DIAG_IMG="${DIAG_GZ%.gz}"
 RAW_SIZE=$(ls -lh "$DIAG_IMG" | awk '{print $5}')
 echo "💾 解压大小: $RAW_SIZE"
 
-# 挂载镜像
 LOOP=$(losetup -fP --show "$DIAG_IMG")
 mkdir -p "$MOUNT_DIR" "$BOOT_DIR"
 
-# 挂载 boot 分区（FAT32）
 mount -t vfat "${LOOP}p1" "$BOOT_DIR" 2>/dev/null
 BOOT_MOUNTED=$?
 
-# 挂载 rootfs 分区（btrfs，先试 subvol=@，再试默认）
 mount -t btrfs -o subvol=@ "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null \
     || mount -t btrfs "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null \
     || {
@@ -43,7 +39,6 @@ mount -t btrfs -o subvol=@ "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null \
         exit 0
     }
 
-# 探测内核模块目录
 KERNEL_DIR=$(find "$MOUNT_DIR/lib/modules" -maxdepth 1 -type d -name "[0-9]*" 2>/dev/null | head -1)
 if [ -z "$KERNEL_DIR" ]; then
     echo "❌ 找不到内核模块目录"
@@ -57,18 +52,62 @@ KERNEL_VER=$(basename "$KERNEL_DIR")
 echo "🎯 内核版本: $KERNEL_VER"
 
 MOD_BASE="${KERNEL_DIR}/kernel/drivers/net"
-MOD_DIR="$MOUNT_DIR/etc/modules.d"
 
 PASS=0
 FAIL=0
 WARN=0
 
+# ============================================================
+# 检测函数
+# ============================================================
+
+# 精确检查（文件或目录是否存在）
 check_absent() {
-    if [ ! -e "$1" ]; then
-        echo "  ✅ [已清理] $2"
+    local target="$1"
+    local desc="$2"
+    if [ ! -e "$target" ]; then
+        echo "  ✅ [已清理] $desc"
         PASS=$((PASS+1))
     else
-        echo "  ❌ [残留] $2"
+        echo "  ❌ [残留] $desc -> $target"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+# 通配符检查（检查某个目录下是否存在匹配 pattern 的文件/目录）
+check_absent_glob() {
+    local pattern="$1"
+    local desc="$2"
+    local dir=$(dirname "$pattern")
+    local name=$(basename "$pattern")
+    local all
+    all=$(find "$dir" -maxdepth 1 -name "$name" 2>/dev/null | sort)
+    if [ -z "$all" ]; then
+        echo "  ✅ [已清理] $desc"
+        PASS=$((PASS+1))
+    else
+        local count=$(echo "$all" | grep -c .)
+        echo "  ❌ [残留] $desc（${count} 个）:"
+        echo "$all" | head -3 | sed 's/^/      /'
+        [ "$count" -gt 3 ] && echo "      ... 共 ${count} 个"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+# 驱动文件检查（在整个 KERNEL_DIR 下搜索匹配的 .ko* 文件）
+check_driver_absent() {
+    local keyword="$1"
+    local desc="$2"
+    local all
+    all=$(find "$KERNEL_DIR" -name "*${keyword}*.ko*" 2>/dev/null | sort)
+    if [ -z "$all" ]; then
+        echo "  ✅ [已清理] $desc"
+        PASS=$((PASS+1))
+    else
+        local count=$(echo "$all" | grep -c .)
+        echo "  ❌ [残留] $desc（${count} 个）:"
+        echo "$all" | head -3 | sed 's/^/      /'
+        [ "$count" -gt 3 ] && echo "      ... 共 ${count} 个"
         FAIL=$((FAIL+1))
     fi
 }
@@ -78,7 +117,7 @@ check_present() {
         echo "  ✅ [存在] $2"
         PASS=$((PASS+1))
     else
-        echo "  ❌ [缺失] $2"
+        echo "  ❌ [缺失] $2 -> $1"
         FAIL=$((FAIL+1))
     fi
 }
@@ -88,12 +127,14 @@ check_dir_present() {
         echo "  ✅ [存在] $2"
         PASS=$((PASS+1))
     else
-        echo "  ❌ [缺失] $2"
+        echo "  ❌ [缺失] $2 -> $1"
         FAIL=$((FAIL+1))
     fi
 }
 
-# ========== 1. 分区与 Boot 验证 ==========
+# ============================================================
+# 检测开始
+# ============================================================
 
 echo ""
 echo "========== 1. 分区与 Boot 验证 =========="
@@ -101,12 +142,9 @@ echo "========== 1. 分区与 Boot 验证 =========="
 if [ $BOOT_MOUNTED -eq 0 ]; then
     echo "  ✅ [挂载] boot 分区 (FAT32)"
     PASS=$((PASS+1))
-    
     check_present "$BOOT_DIR/zImage" "内核镜像 (zImage)"
     check_present "$BOOT_DIR/uInitrd" "内存盘 (uInitrd)"
     check_present "$BOOT_DIR/uEnv.txt" "引导配置 (uEnv.txt)"
-    
-    # 检查 dtb 文件
     DTB_COUNT=$(find "$BOOT_DIR/dtb" -name "*.dtb" 2>/dev/null | wc -l)
     if [ "$DTB_COUNT" -gt 0 ]; then
         echo "  ✅ [存在] DTB 设备树文件 (${DTB_COUNT} 个)"
@@ -120,8 +158,6 @@ else
     WARN=$((WARN+1))
 fi
 
-# ========== 2. 系统完整性验证 ==========
-
 echo ""
 echo "========== 2. 系统完整性验证 =========="
 
@@ -132,29 +168,26 @@ check_present "$MOUNT_DIR/bin/sh" "shell 程序"
 check_dir_present "$MOUNT_DIR/etc/config" "OpenWrt 配置目录"
 check_dir_present "$MOUNT_DIR/usr/bin" "用户二进制目录"
 
-# ========== 3. 内核模块验证 ==========
-
 echo ""
 echo "========== 3. 内核模块验证 =========="
 
 check_dir_present "$KERNEL_DIR" "内核模块目录"
 check_dir_present "$KERNEL_DIR/kernel" "内核驱动目录"
 
-# ========== 4. 精简功能验证（应删除） ==========
-
 echo ""
 echo "========== 4. 精简功能验证（应删除） =========="
 
 echo "--- 无线组件 ---"
-check_absent "${MOD_BASE}/wireless" "wireless 驱动目录"
+check_absent "$MOUNT_DIR/etc/config/wireless" "wireless 配置"
+check_absent "$MOUNT_DIR/etc/wireless" "/etc/wireless 目录"
 check_absent "$MOUNT_DIR/usr/sbin/hostapd" "hostapd 二进制"
 check_absent "$MOUNT_DIR/usr/sbin/wpa_supplicant" "wpa_supplicant 二进制"
 check_absent "$MOUNT_DIR/etc/init.d/hostapd" "hostapd 服务"
 check_absent "$MOUNT_DIR/etc/init.d/wpad" "wpad 服务"
-check_absent "$MOUNT_DIR/etc/config/wireless" "wireless 配置"
-check_absent "$MOUNT_DIR/etc/wireless" "/etc/wireless 目录"
-check_absent "${MOD_DIR}/mac80211" "mac80211 模块"
-check_absent "${MOD_DIR}/cfg80211" "cfg80211 模块"
+check_absent "${MOD_BASE}/wireless" "wireless 驱动目录"
+check_driver_absent "mac80211" "mac80211 模块"
+check_driver_absent "cfg80211" "cfg80211 模块"
+check_driver_absent "rfkill" "rfkill 模块"
 
 echo "--- PPPoE 组件 ---"
 check_absent "${MOD_BASE}/ppp" "ppp 驱动目录"
@@ -163,26 +196,46 @@ check_absent "$MOUNT_DIR/etc/init.d/ppp" "ppp 服务"
 
 echo "--- 无关网卡驱动 ---"
 check_absent "${MOD_BASE}/atlantic" "atlantic 网卡驱动"
-check_absent "${MOD_BASE}/dwmac-*" "dwmac 系列网卡驱动"
 check_absent "${MOD_BASE}/e1000e" "e1000e 网卡驱动"
-check_absent "${MOD_BASE}/fsl-*" "fsl 系列驱动"
 check_absent "${MOD_BASE}/mvneta" "mvneta 网卡驱动"
 check_absent "${MOD_BASE}/stmmac" "stmmac 网卡驱动"
 check_absent "${MOD_BASE}/ena" "ena 网卡驱动"
 check_absent "${MOD_BASE}/vmxnet3" "vmxnet3 网卡驱动"
+check_absent "${MOD_BASE}/bcmgenet" "bcmgenet 网卡驱动"
+check_absent "${MOD_BASE}/hyperv" "hyperv 网卡驱动"
+check_absent "${MOD_BASE}/octeontx2" "octeontx2 网卡驱动"
+check_absent_glob "${MOD_BASE}/dwmac-*" "dwmac 系列网卡驱动"
+check_absent_glob "${MOD_BASE}/fsl-*" "fsl 系列驱动"
 
-echo "--- PHY 驱动清理 ---"
-check_absent "${KERNEL_DIR}/kernel/drivers/net/phy/bcm-phy-lib.ko" "broadcom PHY 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/net/phy/marvell.ko" "marvell PHY 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/net/phy/aquantia.ko" "aquantia PHY 驱动"
-check_present "${KERNEL_DIR}/kernel/drivers/net/phy/realtek.ko" "realtek PHY 驱动（应保留）"
+echo "--- PHY 驱动全面检查（只允许 realtek） ---"
+PHY_DIR="${KERNEL_DIR}/kernel/drivers/net/phy"
+if [ -d "$PHY_DIR" ]; then
+    OTHER_PHY=$(find "$PHY_DIR" -maxdepth 1 -type f -name "*.ko*" -printf "%f\n" | grep -v "^realtek" | sort)
+    if [ -n "$OTHER_PHY" ]; then
+        count=$(echo "$OTHER_PHY" | grep -c .)
+        echo "  ❌ [残留] 存在非 realtek PHY 驱动（${count} 个）:"
+        echo "$OTHER_PHY" | head -3 | sed 's/^/      /'
+        [ "$count" -gt 3 ] && echo "      ... 共 ${count} 个"
+        FAIL=$((FAIL+1))
+    else
+        echo "  ✅ [已清理] 仅保留 realtek PHY 驱动"
+        PASS=$((PASS+1))
+    fi
+else
+    echo "  ⚠️  [跳过] PHY 目录不存在"
+    WARN=$((WARN+1))
+fi
 
 echo "--- 其他无用驱动 ---"
-check_absent "${KERNEL_DIR}/kernel/drivers/gpio/gpio-pca953x.ko" "gpio-pca953x 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/i2c/muxes/i2c-mux-pca954x.ko" "i2c-mux-pca954x 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/watchdog/sp805_wdt.ko" "sp805_wdt 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/ssb" "ssb 驱动"
-check_absent "${KERNEL_DIR}/kernel/drivers/bcma" "bcma 驱动"
+check_driver_absent "gpio-pca953x" "gpio-pca953x 驱动"
+check_driver_absent "i2c-mux-pca954x" "i2c-mux-pca954x 驱动"
+check_driver_absent "sp805_wdt" "sp805_wdt 驱动"
+check_driver_absent "ssb" "ssb 驱动"
+check_driver_absent "bcma" "bcma 驱动"
+
+echo "--- 固件文件清理 ---"
+check_absent "$MOUNT_DIR/lib/firmware/brcm" "brcm 固件目录"
+check_absent_glob "$MOUNT_DIR/lib/firmware/rtl_*" "rtl_* 固件文件"
 
 echo "--- 语言包精简 ---"
 LANG_FILES=$(find "$MOUNT_DIR/usr/lib/lua/luci/i18n" -name "*.lmo" 2>/dev/null | grep -v -E "zh-cn|en" | wc -l)
@@ -209,16 +262,12 @@ else
     FAIL=$((FAIL+1))
 fi
 
-# ========== 5. 核心功能保留验证 ==========
-
 echo ""
 echo "========== 5. 核心功能保留验证 =========="
 
-check_present "${MOD_DIR}/watchdog" "看门狗模块"
-check_present "${MOD_DIR}/panfrost" "GPU 模块 (panfrost)"
-check_present "${MOD_DIR}/pwm_meson" "PWM 模块"
-
-# ========== 6. vmlinux-btf 验证 ==========
+check_present "$MOUNT_DIR/etc/modules.d/watchdog" "看门狗模块"
+check_present "$MOUNT_DIR/etc/modules.d/panfrost" "GPU 模块 (panfrost)"
+check_present "$MOUNT_DIR/etc/modules.d/pwm_meson" "PWM 模块"
 
 echo ""
 echo "========== 6. vmlinux-btf 注入验证 =========="
@@ -230,14 +279,11 @@ if [ -f "$BTF_FILE" ]; then
     echo "  ✅ [已注入] vmlinux-btf 文件 (${SIZE})"
     PASS=$((PASS+1))
     
-    # 检查文件类型
     FILE_TYPE=$(file -b "$BTF_FILE" 2>/dev/null)
     
     if echo "$FILE_TYPE" | grep -qi "ELF"; then
         echo "  ✅ [格式] ELF 格式"
         PASS=$((PASS+1))
-        
-        # ELF 格式：检查 .BTF 段
         if command -v readelf >/dev/null 2>&1; then
             BTF_SECTION=$(readelf -S "$BTF_FILE" 2>/dev/null | grep -i "\.BTF")
             if [ -n "$BTF_SECTION" ]; then
@@ -249,11 +295,8 @@ if [ -f "$BTF_FILE" ]; then
             fi
         fi
     else
-        # 非 ELF 格式，可能是原始 BTF 数据（OpenWrt 常见）
         echo "  ℹ️  [格式] 原始 BTF 数据格式（非 ELF，OpenWrt 常见）"
         PASS=$((PASS+1))
-        
-        # 检查 BTF magic number（BTF_MAGIC = 0xeB9F，小端存储为 9F eB）
         MAGIC=$(xxd -l 2 -p "$BTF_FILE" 2>/dev/null)
         if [ "$MAGIC" = "9feb" ] || [ "$MAGIC" = "eb9f" ]; then
             echo "  ✅ [BTF] BTF magic 校验通过"
@@ -264,7 +307,6 @@ if [ -f "$BTF_FILE" ]; then
         fi
     fi
     
-    # 文件大小合理性检查（应该大于 500KB）
     if [ "$SIZE_BYTES" -gt 500000 ]; then
         echo "  ✅ [大小] 文件大小合理 (${SIZE})"
         PASS=$((PASS+1))
@@ -275,15 +317,12 @@ if [ -f "$BTF_FILE" ]; then
 else
     echo "  ❌ [未注入] vmlinux-btf 文件不存在"
     FAIL=$((FAIL+1))
-    
     if [ -d "$MOUNT_DIR/usr/lib/debug" ]; then
         echo "     debug 目录内容: $(ls "$MOUNT_DIR/usr/lib/debug/" 2>/dev/null)"
     else
         echo "     usr/lib/debug 目录不存在"
     fi
 fi
-
-# ========== 7. 固件信息汇总 ==========
 
 echo ""
 echo "========== 7. 固件信息汇总 =========="
@@ -294,14 +333,10 @@ echo "  内核版本: $KERNEL_VER"
 echo "  架构: aarch64 (arm64)"
 echo "  文件系统: btrfs + zstd 压缩"
 
-# ========== 清理 ==========
-
 umount "$MOUNT_DIR" 2>/dev/null
 umount "$BOOT_DIR" 2>/dev/null
 losetup -d "$LOOP" 2>/dev/null
 rm -rf "$MOUNT_DIR" "$BOOT_DIR" "$DIAG_IMG"
-
-# ========== 最终结果 ==========
 
 echo ""
 echo "=========================================="
@@ -323,5 +358,4 @@ else
     echo "❌ 有 $FAIL 项失败，请检查上方明细"
 fi
 
-# 无论结果如何，都以 0 退出（只出报告，不阻断流程）
 exit 0
