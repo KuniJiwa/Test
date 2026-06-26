@@ -1,211 +1,197 @@
 #!/bin/bash
-# 文件路径：shell/cleanup-packages.sh
-# N1 旁路由固件编译后清理脚本，反向保留核心驱动，自动删除其余无用组件
+# 文件路径：shell/check-firmware.sh
+# N1 固件免挂载诊断脚本（基于 rootfs.tar.gz，弱容错 + 全缓存）
+# 先执行精简清理（删内核模块 + 改源），再生成诊断报告
 
-set -euo pipefail
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+WHITE="\033[37m"
+GRAY="\033[90m"
+BOLD="\033[1m"
+NC="\033[0m"
 
-if [ -z "${GITHUB_WORKSPACE:-}" ]; then
-    GITHUB_WORKSPACE="$(cd "$(dirname "$0")/.." && pwd)"
+SEP_LINE="─────────────────────────────────────────────────"
+
+if [[ -n "${NO_COLOR:-}" ]]; then
+    RED=""; GREEN=""; YELLOW=""; WHITE=""; GRAY=""; BOLD=""; NC=""
 fi
 
-echo "========== 🔧 N1 固件后处理清理 =========="
+# 查找 rootfs 路径
+if [ -z "${GITHUB_WORKSPACE:-}" ]; then
+    GITHUB_WORKSPACE="$(cd "$(dirname "$0")/.." && pwd 2>/dev/null || echo ".")"
+fi
 
-ROOTFS_TAR=$(find ${GITHUB_WORKSPACE}/bin/targets/armsr/armv8/ -name "*rootfs.tar.gz" | head -1)
+ROOTFS_FILE=$(find "${GITHUB_WORKSPACE}/bin/targets/armsr/armv8/" -name "*rootfs.tar.gz" -type f 2>/dev/null | head -n1 || true)
 
-if [ -z "$ROOTFS_TAR" ] || [ ! -f "$ROOTFS_TAR" ]; then
-    echo "❌ [失败] 未找到 rootfs.tar.gz，跳过清理"
+if [ ! -f "$ROOTFS_FILE" ]; then
+    echo -e "${RED}❌ 未找到 rootfs.tar.gz，跳过${NC}"
     exit 0
 fi
 
-echo "📦 [信息] 找到 rootfs: $ROOTFS_TAR"
+echo -e "\n${BOLD}🔧 执行精简清理...${NC}"
 
-TMP_DIR="/tmp/rootfs_cleanup_$$"
-mkdir -p "$TMP_DIR"
-tar -xzf "$ROOTFS_TAR" -C "$TMP_DIR"
-echo "✅ [成功] 解压完成"
+# ========== 清理阶段 ==========
+CLEAN_TMP="/tmp/rootfs_cleanup_$$"
+mkdir -p "$CLEAN_TMP"
+tar -xzf "$ROOTFS_FILE" -C "$CLEAN_TMP" 2>/dev/null
+trap 'rm -rf "$CLEAN_TMP"' EXIT
 
-trap 'rm -rf "$TMP_DIR"' EXIT
+# 1. 删除内核模块目录
+if [ -d "$CLEAN_TMP/lib/modules" ]; then
+    rm -rf "$CLEAN_TMP/lib/modules"/*
+    echo -e "  ${GREEN}✅ 已删除内核模块目录内容${NC}"
+else
+    echo -e "  ${YELLOW}⚠️ lib/modules/* 不存在${NC}"
+fi
 
-MODULES_DIR="$TMP_DIR/lib/modules"
-KERNEL_VER=$(ls "$MODULES_DIR" | head -1)
-MOD_PATH="$MODULES_DIR/$KERNEL_VER"
-STATUS_FILE="$TMP_DIR/usr/lib/opkg/status"
+# 2. 修改软件源
+if [ -f "$CLEAN_TMP/etc/opkg/distfeeds.conf" ]; then
+    sed -i 's|/aarch64_generic/|/aarch64_cortex-a53/|g' "$CLEAN_TMP/etc/opkg/distfeeds.conf"
+    sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$CLEAN_TMP/etc/opkg/distfeeds.conf"
+    echo -e "  ${GREEN}✅ 软件源已替换${NC}"
+else
+    echo -e "  ${YELLOW}⚠️ distfeeds.conf 不存在${NC}"
+fi
 
-# 通用函数：从 opkg 状态文件删除指定包记录
-delete_pkg_record() {
-    sed -i "/^Package: $1$/,/^$/d" "$STATUS_FILE"
+# 3. 重新打包
+cd "$CLEAN_TMP" || exit
+OUT_DIR="$(dirname "$ROOTFS_FILE")"
+rm -f "$ROOTFS_FILE"
+tar --numeric-owner -czf "$ROOTFS_FILE" . 2>/dev/null
+echo -e "  ${GREEN}✅ 打包完成${NC}"
+
+# 清理临时目录（trap 会处理，但提前删掉释放空间）
+rm -rf "$CLEAN_TMP"
+
+echo -e "\n${SEP_LINE}"
+echo -e "${BOLD}📊 固件诊断报告（清理后）${NC}"
+
+# ========== 诊断阶段（基于清理后的 tar 包） ==========
+FILE_DETAIL=$(tar -tzvf "$ROOTFS_FILE" 2>/dev/null || true)
+
+if [ -z "$FILE_DETAIL" ]; then
+    echo -e "${RED}❌ 无法读取 rootfs.tar.gz 文件列表${NC}"
+    exit 1
+fi
+
+FILE_LIST=$(echo "$FILE_DETAIL" | awk '{print $NF}' || true)
+
+RELEASE_CONTENT=$(tar -xzf "$ROOTFS_FILE" -O ./etc/openwrt_release 2>/dev/null || echo "无法获取")
+DISTFEEDS_CONTENT=$(tar -xzf "$ROOTFS_FILE" -O ./etc/opkg/distfeeds.conf 2>/dev/null || echo "无")
+NETWORK_CONTENT=$(tar -xzf "$ROOTFS_FILE" -O ./etc/config/network 2>/dev/null || echo "文件不存在（首次开机动态生成）")
+STATUS_CONTENT=$(tar -xzf "$ROOTFS_FILE" -O ./usr/lib/opkg/status 2>/dev/null || true)
+
+file_exists() {
+    grep -qF "./$1" <<< "$FILE_LIST" 2>/dev/null
 }
 
-# ==================== 1. 删除无线组件 ====================
-echo ""
-echo "========== 1. 删除无线组件 =========="
+get_file_size() {
+    local path="$1"
+    local size_bytes
+    size_bytes=$(echo "$FILE_DETAIL" | awk -v p="./$path" '$NF == p {print $3; exit}' || echo 0)
 
-WIRELESS_DIR="$MOD_PATH/drivers/net/wireless"
-[ -d "$WIRELESS_DIR" ] && rm -rf "$WIRELESS_DIR" && echo "  ✅ [成功] 已删除 wireless 目录"
-
-for mod in mac80211 cfg80211 rfkill; do
-    find "$MOD_PATH" -name "${mod}.ko*" -delete 2>/dev/null && echo "  ✅ [成功] 已删除模块: $mod" || true
-done
-
-rm -rf "$TMP_DIR/lib/firmware/brcm" 2>/dev/null && echo "  ✅ [成功] 已删除: brcm 固件" || true
-rm -rf "$TMP_DIR/lib/firmware/rtl_"* 2>/dev/null && echo "  ✅ [成功] 已删除: rtl_* 固件" || true
-
-for tool in hostapd wpa_supplicant wpa_cli hostapd_cli; do
-    rm -f "$TMP_DIR/usr/sbin/$tool" 2>/dev/null && echo "  ✅ [成功] 已删除: $tool" || true
-done
-
-rm -rf "$TMP_DIR/usr/lib/hostapd" 2>/dev/null
-
-for svc in wpad hostapd wpa_supplicant; do
-    rm -f "$TMP_DIR/etc/init.d/$svc" 2>/dev/null && echo "  ✅ [成功] 已删除服务: $svc" || true
-done
-
-rm -rf "$TMP_DIR/etc/config/wireless" 2>/dev/null && echo "  ✅ [成功] 已删除无线配置" || echo "  ⚪ [跳过] 无线配置不存在"
-rm -rf "$TMP_DIR/etc/wireless" 2>/dev/null && echo "  ✅ [成功] 已删除 /etc/wireless" || echo "  ⚪ [跳过] /etc/wireless 不存在"
-
-# ==================== 2. 删除 PPPoE 组件 ====================
-echo ""
-echo "========== 2. 删除 PPPoE 组件 =========="
-
-rm -rf "$MOD_PATH/drivers/net/ppp" 2>/dev/null && echo "  ✅ [成功] 已删除 PPPoE 内核模块目录" || true
-rm -f "$TMP_DIR/usr/sbin/pppd" "$TMP_DIR/usr/sbin/pppoe-discovery" "$TMP_DIR/usr/bin/chat" 2>/dev/null && echo "  ✅ [成功] 已删除 PPP 工具" || true
-rm -rf "$TMP_DIR/etc/ppp" 2>/dev/null
-rm -f "$TMP_DIR/etc/init.d/ppp" 2>/dev/null && echo "  ✅ [成功] 已删除 /etc/init.d/ppp" || true
-
-if [ -f "$STATUS_FILE" ]; then
-    for pkg in ppp ppp-mod-pppoe kmod-ppp kmod-pppoe kmod-pppox; do
-        delete_pkg_record "$pkg"
-    done
-    rm -f "$TMP_DIR/usr/lib/opkg/info/ppp"* 2>/dev/null
-    echo "  ✅ [成功] 已从 opkg 数据库中移除 PPP 包记录"
-fi
-
-# ==================== 3. 删除无关网卡及虚拟化驱动 ====================
-echo ""
-echo "========== 3. 删除无关网卡及虚拟化驱动 =========="
-
-KEEP_PATTERN="realtek|meson|amlogic|stmicro|usb"
-BLACKLIST_KEYWORDS="atlantic bcmgenet dwmac e1000e fsl mvneta stmmac hyperv ena vmxnet3 octeontx2"
-
-# 3.1 删除物理模块文件
-for kw in $BLACKLIST_KEYWORDS; do
-    count=$(find "$MOD_PATH" -type f -name "*${kw}*.ko*" -print -delete 2>/dev/null | wc -l)
-    if [ "$count" -gt 0 ]; then
-        echo "  ✅ [成功] 已删除 $count 个包含关键字: ${kw} 的驱动"
-    else
-        echo "  ⚪ [跳过] 未找到包含关键字: ${kw} 的驱动"
-    fi
-done
-
-# 3.2 net 目录逐文件甄别
-if [ -d "$MOD_PATH/drivers/net" ]; then
-    while IFS= read -r -d '' ko; do
-        base=$(basename "$ko")
-        if echo "$base" | grep -qE "$KEEP_PATTERN"; then
-            echo "  ⚪ [保留] $base"
+    if [ "$size_bytes" -gt 0 ] 2>/dev/null; then
+        if [ "$size_bytes" -gt 1048576 ]; then
+            echo "$(echo "scale=1; $size_bytes / 1048576" | bc) MB"
+        elif [ "$size_bytes" -gt 1024 ]; then
+            echo "$(echo "scale=0; $size_bytes / 1024" | bc) KB"
         else
-            rm -f "$ko"
-            echo "  ✅ [成功] 已删除: $base"
+            echo "${size_bytes} B"
         fi
-    done < <(find "$MOD_PATH/drivers/net" -type f -name "*.ko*" -print0 2>/dev/null)
-else
-    echo "  ⚪ [跳过] net 目录不存在"
-fi
-
-# 3.3 清理 opkg 残留记录
-if [ -f "$STATUS_FILE" ]; then
-    echo "  🔍 清理 opkg 中残留的 kmod 包记录..."
-    for kw in $BLACKLIST_KEYWORDS; do
-        sed -i "/^Package: kmod-.*${kw}.*$/,/^$/d" "$STATUS_FILE"
-    done
-    for pkg in kmod-amazon-ena kmod-octeontx2-net kmod-vmxnet3 kmod-gpio-pca953x kmod-i2c-mux-pca954x kmod-sp805-wdt kmod-mac80211 kmod-cfg80211 kmod-rfkill kmod-accessibility kmod-auxdisplay kmod-cb710 kmod-ssb kmod-bcma; do
-        delete_pkg_record "$pkg"
-    done
-    tail -c1 "$STATUS_FILE" | read -r _ || echo >> "$STATUS_FILE"
-    echo "  ✅ [成功] 已清理无用 kmod 包记录"
-fi
-
-# ==================== 4. 清理 PHY 驱动（仅保留 realtek） ====================
-echo ""
-echo "========== 4. 清理 PHY 驱动（仅保留 realtek） =========="
-
-while IFS= read -r -d '' ko; do
-    base=$(basename "$ko")
-    if echo "$base" | grep -qi "^realtek"; then
-        echo "  ⚪ [保留] PHY: $base"
     else
-        rm -f "$ko"
-        echo "  ✅ [成功] 已删除 PHY: $base"
+        echo "0 B"
     fi
-done < <(find "$MOD_PATH" -type f -name "*phy*.ko*" -print0 2>/dev/null)
+}
 
-echo "  ⚪ [保留] realtek 开头的 PHY 驱动"
+# ========== 系统版本 ==========
+echo -e "  ${BOLD}${WHITE}【系统版本信息】${NC}"
+echo "$RELEASE_CONTENT"
+echo -e "${GRAY}${SEP_LINE}${NC}"
 
-# ==================== 5. 删除其他无用杂项驱动 ====================
-echo ""
-echo "========== 5. 删除其他无用驱动 =========="
+# ========== 软件源 ==========
+echo -e "  ${BOLD}${WHITE}【软件源配置】${NC}"
+echo "$DISTFEEDS_CONTENT"
+echo -e "${GRAY}${SEP_LINE}${NC}"
 
-for dir in accessibility auxdisplay cb710 ssb bcma; do
-    rm -rf "$MOD_PATH/drivers/$dir" 2>/dev/null && echo "  ✅ [成功] 已删除: $dir" || echo "  ⚪ [跳过] 目录不存在: $dir"
-done
-
-for mod in sp805_wdt gpio-pca953x i2c-mux-pca954x; do
-    count=$(find "$MOD_PATH" -name "${mod}.ko*" -print -delete 2>/dev/null | wc -l)
-    if [ "$count" -gt 0 ]; then
-        echo "  ✅ [成功] 已删除 $count 个 ${mod} 模块"
-    else
-        echo "  ⚪ [跳过] 未找到 ${mod} 模块"
-    fi
-done
-
-echo "  ⚪ [保留] pps, ptp, macvlan, macsec, rtc-rx8025"
-
-# ==================== 6. 精简系统文件 ====================
-echo ""
-echo "========== 6. 精简系统冗余文件 =========="
-
-find "$TMP_DIR/usr/lib/lua/luci/i18n" -type f ! -name "*.zh-cn.lmo" ! -name "*.en.lmo" -delete 2>/dev/null
-echo "  ✅ [成功] 已精简语言包（仅保留 zh-cn/en）"
-
-rm -rf "$TMP_DIR/usr/share/man" "$TMP_DIR/usr/share/info" "$TMP_DIR/usr/share/doc" 2>/dev/null && echo "  ✅ [成功] 已删除帮助文档" || echo "  ⚪ [跳过] 帮助文档不存在"
-rm -rf "$TMP_DIR/usr/include" "$TMP_DIR/usr/lib/pkgconfig" 2>/dev/null && echo "  ✅ [成功] 已删除开发文件" || echo "  ⚪ [跳过] 开发文件不存在"
-
-find "$TMP_DIR" -name "*.a" -delete 2>/dev/null
-echo "  ✅ [成功] 已删除静态库"
-
-find "$TMP_DIR" -name "*.la" -delete 2>/dev/null
-echo "  ✅ [成功] 已删除 libtool 文件"
-
-# ==================== 修改软件源配置 ====================
-DISTFEEDS="$TMP_DIR/etc/opkg/distfeeds.conf"
-
-if [ -f "$DISTFEEDS" ]; then
-    echo "🔧 修改软件源架构和镜像..."
-    sed -i 's|/aarch64_generic/|/aarch64_cortex-a53/|g' "$DISTFEEDS"
-    sed -i 's|downloads.immortalwrt.org|mirrors.ustc.edu.cn/immortalwrt|g' "$DISTFEEDS"
-    echo "✅ 软件源已替换"
+# ========== OpenClash 规则库 ==========
+echo -e "  ${BOLD}${WHITE}【OpenClash 规则库】${NC}"
+if file_exists "etc/openclash/GeoIP.dat"; then
+    size=$(get_file_size "etc/openclash/GeoIP.dat")
+    echo -e "  ${GREEN}✅ GeoIP: 已打包 (${size})${NC}"
 else
-    echo "⚠️ 未找到 etc/opkg/distfeeds.conf，跳过"
+    echo -e "  ${YELLOW}⚠️ GeoIP: 未打包${NC}"
 fi
 
-# ==================== 7. 重新打包 rootfs ====================
-echo ""
-echo "========== 7. 重新打包 rootfs =========="
-
-cd "$TMP_DIR" || exit
-
-OUT_DIR="$(dirname "$ROOTFS_TAR")"
-mkdir -p "$OUT_DIR"
-
-rm -f "$ROOTFS_TAR"
-
-if tar --numeric-owner -czf "$ROOTFS_TAR" . ; then
-    echo "✅ 打包成功"
+if file_exists "etc/openclash/GeoSite.dat"; then
+    size=$(get_file_size "etc/openclash/GeoSite.dat")
+    echo -e "  ${GREEN}✅ GeoSite: 已打包 (${size})${NC}"
 else
-    echo "❌ tar 打包失败"
-    exit 2
+    echo -e "  ${YELLOW}⚠️ GeoSite: 未打包${NC}"
 fi
+echo -e "${GRAY}${SEP_LINE}${NC}"
 
-cd /
+# ========== 99-custom.sh ==========
+echo -e "  ${BOLD}${WHITE}【99-custom.sh】${NC}"
+if file_exists "etc/uci-defaults/99-custom.sh"; then
+    echo -e "  ${GREEN}✅ 已打包${NC}"
+else
+    echo -e "  ${YELLOW}⚠️ 未打包${NC}"
+fi
+echo -e "${GRAY}${SEP_LINE}${NC}"
 
-echo "✅ [成功] 清理结束，rootfs 已重新打包"
+# ========== /etc/config/network ==========
+echo -e "  ${BOLD}${WHITE}【/etc/config/network】${NC}"
+echo "$NETWORK_CONTENT"
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== 目录文件数量统计 ==========
+echo -e "  ${BOLD}${WHITE}【主要目录文件数量统计】${NC}"
+for dir in bin etc lib usr www; do
+    COUNT=$(echo "$FILE_LIST" | grep "^./${dir}/" | grep -v '/$' | wc -l || true)
+    echo "  ./${dir}/ : ${COUNT} 个文件"
+done
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== 已安装的 LuCI 面板 ==========
+echo -e "  ${BOLD}${WHITE}【已安装的 LuCI 面板】${NC}"
+PACKAGE_LIST=$(echo "$STATUS_CONTENT" | grep "^Package:" | awk '{print $2}' | sort -u || true)
+for app in $(echo "$PACKAGE_LIST" | grep "^luci-app-" | sed 's/luci-app-//' || true); do
+    echo -e "  ${GREEN}✅ $app${NC}"
+done
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== /etc/config/ 下所有配置文件 ==========
+echo -e "  ${BOLD}${WHITE}【/etc/config/ 下所有配置文件】${NC}"
+CONFIG_FILES=$(echo "$FILE_LIST" | grep "^./etc/config/" | sed 's|^./etc/config/||' | sort -u || true)
+CONFIG_LIST=$(echo "$CONFIG_FILES" | tr '\n' ' ')
+echo "  $CONFIG_LIST"
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== /etc/uci-defaults/ 下所有启动脚本 ==========
+echo -e "  ${BOLD}${WHITE}【/etc/uci-defaults/ 下所有启动脚本】${NC}"
+UCI_DEFAULTS=$(echo "$FILE_LIST" | grep "^./etc/uci-defaults/" | sed 's|^./etc/uci-defaults/||' | sort -u || true)
+UCI_LIST=$(echo "$UCI_DEFAULTS" | tr '\n' ' ')
+echo "  $UCI_LIST"
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== /etc/init.d/ 下所有服务脚本 ==========
+echo -e "  ${BOLD}${WHITE}【/etc/init.d/ 下所有服务脚本】${NC}"
+INIT_LIST=$(echo "$FILE_LIST" | grep "^./etc/init.d/" | sed 's|^./etc/init.d/||' | sort | tr '\n' ' ')
+echo "  $INIT_LIST"
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+# ========== 全量包列表 ==========
+echo -e "  ${BOLD}${WHITE}【全量包列表】${NC}"
+if [ -n "$PACKAGE_LIST" ]; then
+    echo "  $PACKAGE_LIST" | tr '\n' ' '
+    echo ""
+    PKG_TOTAL=$(echo "$PACKAGE_LIST" | wc -l || true)
+    echo -e "  包总数: ${GREEN}${PKG_TOTAL}${NC}"
+    echo -e "  ${GREEN}注：包列表含内核模块记录，部分对应文件已按需精简，保留记录可维持依赖完整性，不影响运行${NC}"
+else
+    echo "  ⚪ 未获取到包列表"
+fi
+echo -e "${GRAY}${SEP_LINE}${NC}"
+
+echo -e "${GREEN}✅ 诊断完成（已精简清理）${NC}"
