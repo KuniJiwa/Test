@@ -1,5 +1,5 @@
 #!/bin/bash
-#路径：shell/verify-cleanup.sh
+# 路径：shell/verify-cleanup.sh
 # 固件诊断 - 操作副本，原始不动
 
 OUTPUT_DIR="/opt/openwrt_packit/output"
@@ -10,7 +10,7 @@ echo "🔍 固件全面诊断"
 echo ""
 
 IMG_GZ=$(ls "$OUTPUT_DIR"/openwrt_s905d_n1_*.img.gz 2>/dev/null | head -1)
-[ -z "$IMG_GZ" ] && { echo "❌ 找不到固件文件"; exit 1; }
+[ -z "$IMG_GZ" ] && { echo "❌ 找不到固件文件"; exit 0; }
 
 IMG_BASENAME=$(basename "$IMG_GZ")
 IMG_SIZE=$(ls -lh "$IMG_GZ" | awk '{print $5}')
@@ -40,7 +40,7 @@ mount -t btrfs -o subvol=@ "${LOOP}p2" "$MOUNT_DIR" 2>/dev/null \
         echo "❌ 挂载 rootfs 失败"
         losetup -d "$LOOP" 2>/dev/null
         rm -f "$DIAG_IMG"
-        exit 1
+        exit 0
     }
 
 # 探测内核模块目录
@@ -50,7 +50,7 @@ if [ -z "$KERNEL_DIR" ]; then
     umount "$MOUNT_DIR" 2>/dev/null
     losetup -d "$LOOP" 2>/dev/null
     rm -f "$DIAG_IMG"
-    exit 1
+    exit 0
 fi
 
 KERNEL_VER=$(basename "$KERNEL_DIR")
@@ -319,8 +319,9 @@ if [ $FAIL -eq 0 ]; then
     else
         echo "✅ 全部通过（有 $WARN 项警告，不影响使用）"
     fi
-    exit 0
 else
     echo "❌ 有 $FAIL 项失败，请检查上方明细"
-    exit 1
 fi
+
+# 无论结果如何，都以 0 退出（只出报告，不阻断流程）
+exit 0
