@@ -151,7 +151,7 @@ jobs:
           KERNEL_VERSION_NAME: ${{ inputs.kernel_version }}
           KERNEL_AUTO_LATEST: "false"
           WHOAMI: KuniJiwa
-          APPLY_CUSTOM_PATCH: "false"
+          APPLY_CUSTOM_PATCH: 1
 
       - name: 诊断固件
         run: |
