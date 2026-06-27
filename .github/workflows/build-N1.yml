@@ -214,7 +214,7 @@ jobs:
               { grep '^arch ' /home/build/immortalwrt/files/etc/opkg/arch.conf; cat repositories.conf; } > /tmp/repos.conf && mv /tmp/repos.conf repositories.conf
               bash /home/build/immortalwrt/build.sh
             "
-            
+
       - name: 查找rootfs.tar.gz所在路径
         id: find_rootfs
         run: |
@@ -231,20 +231,7 @@ jobs:
           KERNEL_VERSION_NAME: ${{ inputs.kernel_version }}
           KERNEL_AUTO_LATEST: false
           WHOAMI: ${{ inputs.builder_name }}
-          APPLY_CUSTOM_PATCH: 0
-
-      - name: Rename .img.gz file
-        run: |
-          OUTPUT_DIR="${PACKAGED_OUTPUTPATH:-/opt/openwrt_packit/output}"
-          IMG_FILE=$(ls ${OUTPUT_DIR}/*.img.gz | head -n1)
-          KERNEL_VERSION=$(echo "$IMG_FILE" | grep -oP 'k\d+\.\d+\.\d+')
-          LUCI_VERSION="${{ inputs.luci_version }}"
-          TIMESTAMP=$(date +"%Y%m%d-%H%M")
-          mv "$IMG_FILE" "${OUTPUT_DIR}/immortalwrt-${LUCI_VERSION}-phicomm-n1-btrfs-${KERNEL_VERSION}-${TIMESTAMP}.img.gz"
-          ROOTFS_FILE=$(find "${GITHUB_WORKSPACE}/bin/targets/armsr/armv8/" -type f -name "*rootfs.tar.gz" | head -n1)
-          if [ -f "$ROOTFS_FILE" ]; then
-            cp "$ROOTFS_FILE" "${OUTPUT_DIR}/immortalwrt-${LUCI_VERSION}-phicomm-n1-${TIMESTAMP}-rootfs.tar.gz"
-          fi
+          APPLY_CUSTOM_PATCH: false
 
       - name: 诊断img固件
         run: |
