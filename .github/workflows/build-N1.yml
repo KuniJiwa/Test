@@ -146,7 +146,7 @@ jobs:
       - name: Package firmware
         uses: KuniJiwa/flippy-openwrt-actions@custom
         env:
-          OPENWRT_ARMSR: "https://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260625-1424-rootfs.tar.gz"
+          OPENWRT_ARMSR: "hhttps://github.com/KuniJiwa/ImmortalWrt-Phicomm-N1/releases/download/phicomm-n1/immortalwrt-24.10.6-phicomm-n1-20260628-0217-rootfs.tar.gz"
           PACKAGE_SOC: s905d
           KERNEL_VERSION_NAME: ${{ inputs.kernel_version }}
           KERNEL_AUTO_LATEST: "false"
