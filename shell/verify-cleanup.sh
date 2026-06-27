@@ -371,11 +371,33 @@ echo "  内核版本: $KERNEL_VER"
 echo "  架构: aarch64 (arm64)"
 echo "  文件系统: btrfs + zstd 压缩"
 
+# ========== 新增：全量包列表查询 ==========
+echo ""
+echo "========== 8. 全量包列表 =========="
+PACKAGE_LIST=""
+if [ -f "$MOUNT_DIR/usr/lib/opkg/status" ]; then
+    PACKAGE_LIST=$(grep "^Package: " "$MOUNT_DIR/usr/lib/opkg/status" | sed 's/^Package: //' | sort)
+fi
+if [ -z "$PACKAGE_LIST" ] && [ -d "$MOUNT_DIR/usr/lib/opkg/info" ]; then
+    PACKAGE_LIST=$(cd "$MOUNT_DIR/usr/lib/opkg/info" && ls *.control 2>/dev/null | sed 's/\.control$//' | sort)
+fi
+if [ -n "$PACKAGE_LIST" ]; then
+    echo "  $PACKAGE_LIST" | tr '\n' ' '
+    echo ""
+    PKG_TOTAL=$(echo "$PACKAGE_LIST" | wc -l)
+    echo "  包总数: $PKG_TOTAL"
+    echo "  注：包列表含内核模块记录，部分对应文件已按需精简，保留记录可维持依赖完整性，不影响运行"
+else
+    echo "  ⚪ 未获取到包列表"
+fi
+
+# ========== 清理挂载点 ==========
 umount "$MOUNT_DIR" 2>/dev/null
 umount "$BOOT_DIR" 2>/dev/null
 losetup -d "$LOOP" 2>/dev/null
 rm -rf "$MOUNT_DIR" "$BOOT_DIR" "$DIAG_IMG"
 
+# ========== 最终结果 ==========
 echo ""
 echo "=========================================="
 echo "📈 诊断结果: 共 $((PASS+FAIL+WARN)) 项"
