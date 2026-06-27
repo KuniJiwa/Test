@@ -214,13 +214,7 @@ jobs:
               { grep '^arch ' /home/build/immortalwrt/files/etc/opkg/arch.conf; cat repositories.conf; } > /tmp/repos.conf && mv /tmp/repos.conf repositories.conf
               bash /home/build/immortalwrt/build.sh
             "
-
-      - name: Remove redundancy
-        run: bash shell/cleanup-packages.sh
-
-      - name: Diagnose firmware
-        run: bash shell/check-firmware.sh || true
-
+            
       - name: 查找rootfs.tar.gz所在路径
         id: find_rootfs
         run: |
@@ -237,7 +231,7 @@ jobs:
           KERNEL_VERSION_NAME: ${{ inputs.kernel_version }}
           KERNEL_AUTO_LATEST: false
           WHOAMI: ${{ inputs.builder_name }}
-          APPLY_CUSTOM_PATCH: true
+          APPLY_CUSTOM_PATCH: 0
 
       - name: Rename .img.gz file
         run: |
@@ -252,14 +246,7 @@ jobs:
             cp "$ROOTFS_FILE" "${OUTPUT_DIR}/immortalwrt-${LUCI_VERSION}-phicomm-n1-${TIMESTAMP}-rootfs.tar.gz"
           fi
 
-      - name: Upload firmware to GitHub Releases
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: phicomm-n1
-          name: ImmortalWrt for Phicomm N1
-          body_path: ${{ github.workspace }}/n1/info.md
-          files: |
-            ${{ env.PACKAGED_OUTPUTPATH }}/immortalwrt-*.img.gz
-            ${{ env.PACKAGED_OUTPUTPATH }}/immortalwrt-*-rootfs.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 诊断img固件
+        run: |
+          export OUTPUT_DIR="${PACKAGED_OUTPUTPATH:-/opt/openwrt_packit/output}"
+          sudo bash shell/verify-cleanup.sh
