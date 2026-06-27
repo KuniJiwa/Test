@@ -58,15 +58,15 @@ FAIL=0
 WARN=0
 
 # ============================================================
-# 检测函数
+# 检测函数（只报告状态，不替清理背书）
 # ============================================================
 
-# 精确检查（文件或目录是否存在）
+# 精确检查：文件或目录是否存在
 check_absent() {
     local target="$1"
     local desc="$2"
     if [ ! -e "$target" ]; then
-        echo "  ✅ [已清理] $desc"
+        echo "  ✅ 不存在: $desc"
         PASS=$((PASS+1))
     else
         echo "  ❌ [残留] $desc -> $target"
@@ -74,7 +74,7 @@ check_absent() {
     fi
 }
 
-# 通配符检查（检查某个目录下是否存在匹配 pattern 的文件/目录）
+# 通配符检查：目录下是否有匹配 pattern 的文件/目录
 check_absent_glob() {
     local pattern="$1"
     local desc="$2"
@@ -83,7 +83,7 @@ check_absent_glob() {
     local all
     all=$(find "$dir" -maxdepth 1 -name "$name" 2>/dev/null | sort)
     if [ -z "$all" ]; then
-        echo "  ✅ [已清理] $desc"
+        echo "  ✅ 未找到匹配项: $desc"
         PASS=$((PASS+1))
     else
         local count=$(echo "$all" | grep -c .)
@@ -94,14 +94,52 @@ check_absent_glob() {
     fi
 }
 
-# 驱动文件检查（在整个 KERNEL_DIR 下搜索匹配的 .ko* 文件）
+# 检查目录内是否还有 .ko 文件
+check_dir_ko_absent() {
+    local dir="$1"
+    local desc="$2"
+    if [ -d "$dir" ]; then
+        local count=$(find "$dir" -type f -name "*.ko*" 2>/dev/null | wc -l)
+        if [ "$count" -eq 0 ]; then
+            echo "  ✅ 目录为空: $desc"
+            PASS=$((PASS+1))
+        else
+            echo "  ❌ [残留] $desc（${count} 个 .ko 文件）"
+            FAIL=$((FAIL+1))
+        fi
+    else
+        echo "  ✅ 不存在: $desc"
+        PASS=$((PASS+1))
+    fi
+}
+
+# 检查固件目录是否为空
+check_dir_empty() {
+    local dir="$1"
+    local desc="$2"
+    if [ -d "$dir" ]; then
+        local count=$(find "$dir" -type f 2>/dev/null | wc -l)
+        if [ "$count" -eq 0 ]; then
+            echo "  ✅ 目录为空: $desc"
+            PASS=$((PASS+1))
+        else
+            echo "  ❌ [残留] $desc（${count} 个文件）"
+            FAIL=$((FAIL+1))
+        fi
+    else
+        echo "  ✅ 不存在: $desc"
+        PASS=$((PASS+1))
+    fi
+}
+
+# 驱动文件检查：在整个 KERNEL_DIR 下搜索匹配的 .ko* 文件
 check_driver_absent() {
     local keyword="$1"
     local desc="$2"
     local all
     all=$(find "$KERNEL_DIR" -name "*${keyword}*.ko*" 2>/dev/null | sort)
     if [ -z "$all" ]; then
-        echo "  ✅ [已清理] $desc"
+        echo "  ✅ 未找到相关驱动: $desc"
         PASS=$((PASS+1))
     else
         local count=$(echo "$all" | grep -c .)
@@ -114,7 +152,7 @@ check_driver_absent() {
 
 check_present() {
     if [ -f "$1" ]; then
-        echo "  ✅ [存在] $2"
+        echo "  ✅ 存在: $2"
         PASS=$((PASS+1))
     else
         echo "  ❌ [缺失] $2 -> $1"
@@ -124,7 +162,7 @@ check_present() {
 
 check_dir_present() {
     if [ -d "$1" ]; then
-        echo "  ✅ [存在] $2"
+        echo "  ✅ 存在: $2"
         PASS=$((PASS+1))
     else
         echo "  ❌ [缺失] $2 -> $1"
@@ -140,14 +178,14 @@ echo ""
 echo "========== 1. 分区与 Boot 验证 =========="
 
 if [ $BOOT_MOUNTED -eq 0 ]; then
-    echo "  ✅ [挂载] boot 分区 (FAT32)"
+    echo "  ✅ 挂载: boot 分区 (FAT32)"
     PASS=$((PASS+1))
     check_present "$BOOT_DIR/zImage" "内核镜像 (zImage)"
     check_present "$BOOT_DIR/uInitrd" "内存盘 (uInitrd)"
     check_present "$BOOT_DIR/uEnv.txt" "引导配置 (uEnv.txt)"
     DTB_COUNT=$(find "$BOOT_DIR/dtb" -name "*.dtb" 2>/dev/null | wc -l)
     if [ "$DTB_COUNT" -gt 0 ]; then
-        echo "  ✅ [存在] DTB 设备树文件 (${DTB_COUNT} 个)"
+        echo "  ✅ 存在: DTB 设备树文件 (${DTB_COUNT} 个)"
         PASS=$((PASS+1))
     else
         echo "  ❌ [缺失] DTB 设备树文件"
@@ -184,26 +222,26 @@ check_absent "$MOUNT_DIR/usr/sbin/hostapd" "hostapd 二进制"
 check_absent "$MOUNT_DIR/usr/sbin/wpa_supplicant" "wpa_supplicant 二进制"
 check_absent "$MOUNT_DIR/etc/init.d/hostapd" "hostapd 服务"
 check_absent "$MOUNT_DIR/etc/init.d/wpad" "wpad 服务"
-check_absent "${MOD_BASE}/wireless" "wireless 驱动目录"
+check_dir_ko_absent "${MOD_BASE}/wireless" "wireless 驱动目录"
 check_driver_absent "mac80211" "mac80211 模块"
 check_driver_absent "cfg80211" "cfg80211 模块"
 check_driver_absent "rfkill" "rfkill 模块"
 
 echo "--- PPPoE 组件 ---"
-check_absent "${MOD_BASE}/ppp" "ppp 驱动目录"
+check_dir_ko_absent "${MOD_BASE}/ppp" "ppp 驱动目录"
 check_absent "$MOUNT_DIR/usr/sbin/pppd" "pppd 二进制"
 check_absent "$MOUNT_DIR/etc/init.d/ppp" "ppp 服务"
 
 echo "--- 无关网卡驱动 ---"
-check_absent "${MOD_BASE}/atlantic" "atlantic 网卡驱动"
-check_absent "${MOD_BASE}/e1000e" "e1000e 网卡驱动"
-check_absent "${MOD_BASE}/mvneta" "mvneta 网卡驱动"
-check_absent "${MOD_BASE}/stmmac" "stmmac 网卡驱动"
-check_absent "${MOD_BASE}/ena" "ena 网卡驱动"
-check_absent "${MOD_BASE}/vmxnet3" "vmxnet3 网卡驱动"
-check_absent "${MOD_BASE}/bcmgenet" "bcmgenet 网卡驱动"
-check_absent "${MOD_BASE}/hyperv" "hyperv 网卡驱动"
-check_absent "${MOD_BASE}/octeontx2" "octeontx2 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/atlantic" "atlantic 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/e1000e" "e1000e 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/mvneta" "mvneta 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/stmmac" "stmmac 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/ena" "ena 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/vmxnet3" "vmxnet3 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/bcmgenet" "bcmgenet 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/hyperv" "hyperv 网卡驱动"
+check_dir_ko_absent "${MOD_BASE}/octeontx2" "octeontx2 网卡驱动"
 check_absent_glob "${MOD_BASE}/dwmac-*" "dwmac 系列网卡驱动"
 check_absent_glob "${MOD_BASE}/fsl-*" "fsl 系列驱动"
 
@@ -218,7 +256,7 @@ if [ -d "$PHY_DIR" ]; then
         [ "$count" -gt 3 ] && echo "      ... 共 ${count} 个"
         FAIL=$((FAIL+1))
     else
-        echo "  ✅ [已清理] 仅保留 realtek PHY 驱动"
+        echo "  ✅ 仅 realtek PHY 驱动存在"
         PASS=$((PASS+1))
     fi
 else
@@ -234,13 +272,13 @@ check_driver_absent "ssb" "ssb 驱动"
 check_driver_absent "bcma" "bcma 驱动"
 
 echo "--- 固件文件清理 ---"
-check_absent "$MOUNT_DIR/lib/firmware/brcm" "brcm 固件目录"
+check_dir_empty "$MOUNT_DIR/lib/firmware/brcm" "brcm 固件目录"
 check_absent_glob "$MOUNT_DIR/lib/firmware/rtl_*" "rtl_* 固件文件"
 
 echo "--- 语言包精简 ---"
 LANG_FILES=$(find "$MOUNT_DIR/usr/lib/lua/luci/i18n" -name "*.lmo" 2>/dev/null | grep -v -E "zh-cn|en" | wc -l)
 if [ "$LANG_FILES" -eq 0 ]; then
-    echo "  ✅ [已精简] 仅保留 zh-cn / en 语言包"
+    echo "  ✅ 仅保留 zh-cn / en 语言包"
     PASS=$((PASS+1))
 else
     echo "  ❌ [残留] 仍存在 $LANG_FILES 个非中英文语言包"
@@ -255,7 +293,7 @@ check_absent "$MOUNT_DIR/usr/bin/get_random_mac.sh" "get_random_mac.sh"
 
 echo "--- 软件源验证 ---"
 if grep -q "mirrors.ustc.edu.cn" "$MOUNT_DIR/etc/opkg/distfeeds.conf" 2>/dev/null; then
-    echo "  ✅ [已替换] 软件源为 USTC 镜像"
+    echo "  ✅ 软件源已指向 USTC 镜像"
     PASS=$((PASS+1))
 else
     echo "  ❌ [未替换] 软件源不是 USTC 镜像"
@@ -276,18 +314,18 @@ BTF_FILE="$MOUNT_DIR/usr/lib/debug/boot/vmlinux"
 if [ -f "$BTF_FILE" ]; then
     SIZE=$(ls -lh "$BTF_FILE" | awk '{print $5}')
     SIZE_BYTES=$(stat -c%s "$BTF_FILE" 2>/dev/null || echo 0)
-    echo "  ✅ [已注入] vmlinux-btf 文件 (${SIZE})"
+    echo "  ✅ 存在: vmlinux-btf 文件 (${SIZE})"
     PASS=$((PASS+1))
     
     FILE_TYPE=$(file -b "$BTF_FILE" 2>/dev/null)
     
     if echo "$FILE_TYPE" | grep -qi "ELF"; then
-        echo "  ✅ [格式] ELF 格式"
+        echo "  ✅ ELF 格式"
         PASS=$((PASS+1))
         if command -v readelf >/dev/null 2>&1; then
             BTF_SECTION=$(readelf -S "$BTF_FILE" 2>/dev/null | grep -i "\.BTF")
             if [ -n "$BTF_SECTION" ]; then
-                echo "  ✅ [BTF] 包含 .BTF 段"
+                echo "  ✅ 包含 .BTF 段"
                 PASS=$((PASS+1))
             else
                 echo "  ❌ [BTF] 未找到 .BTF 段"
@@ -299,7 +337,7 @@ if [ -f "$BTF_FILE" ]; then
         PASS=$((PASS+1))
         MAGIC=$(xxd -l 2 -p "$BTF_FILE" 2>/dev/null)
         if [ "$MAGIC" = "9feb" ] || [ "$MAGIC" = "eb9f" ]; then
-            echo "  ✅ [BTF] BTF magic 校验通过"
+            echo "  ✅ BTF magic 校验通过"
             PASS=$((PASS+1))
         else
             echo "  ⚠️  [BTF] 无法验证 BTF magic（可能是其他格式）"
@@ -308,7 +346,7 @@ if [ -f "$BTF_FILE" ]; then
     fi
     
     if [ "$SIZE_BYTES" -gt 500000 ]; then
-        echo "  ✅ [大小] 文件大小合理 (${SIZE})"
+        echo "  ✅ 文件大小合理 (${SIZE})"
         PASS=$((PASS+1))
     else
         echo "  ⚠️  [大小] 文件偏小，可能不完整 (${SIZE})"
